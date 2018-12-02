@@ -19,10 +19,10 @@ create.calendar("CMH_call_inpatient",holidays=sort(holidays.fun(2017:2020)),week
 create.calendar("CMH_call_weekend",holidays=sort(holidays.fun(2017:2020)),weekdays=c("monday","tuesday","wednesday","thursday"))
 
 setClass("Fellow", representation(name="character", startdate="POSIXct", blocks="list"))
-setClass("block",representation(assignee="Fellow",assignment="character",startdate="Date",enddate="Date"))
+setClass("block",representation(assignee="character",assignment="character",startdate="Date",enddate="Date"))
 
-create.blocks<-function(schedule,fellow){
-  return(mapply(function(x,y,z) new("block",assignee=fellow,assignment=as.character(z),startdate=x,enddate=y), x=schedule[,1],y=schedule[,2],z=schedule[,3]))
+create.blocks<-function(schedule){
+  return(mapply(function(x,y,z,v) new("block",assignee=v,assignment=z,startdate=x,enddate=y), x=schedule[,1],y=schedule[,2],z=as.character(schedule[,3]),v=schedule[,4]))
 }
 
 fellowYear<-function(startdate) {
@@ -31,6 +31,7 @@ fellowYear<-function(startdate) {
 }
 
 convertblocks<-function(schedule,name){
+  schedule<-read.csv(schedule, stringsAsFactors=FALSE)
   l<-length(schedule[,1])
   assignments<-schedule[,name]
   block_a<-getdate("first day",ref(paste(substr(schedule[seq(1,l,2),1],4,7),"-",str_pad(match(substr(schedule[seq(1,l,2),1],1,3),month.abb),2,pad="0"),sep=""),"month"),cal="CMH")
@@ -38,13 +39,21 @@ convertblocks<-function(schedule,name){
   blockdates<-sort(c(block_a,block_b))
   blockdates.2<-as.Date(sapply(blockdates,function(x) getblockdates(x,blockDates=T)),"1970-01-01")
   scheduleout<-cbind.data.frame(blockdates.2[1,],blockdates.2[2,],assignments)
-  names(scheduleout)<-c("block_start","block_end","assignment")
+  scheduleout$fellow<-name
+  names(scheduleout)<-c("block_start","block_end","assignment","fellow")
   return(scheduleout)
 }
 
-create.schedule<-function(schedule){
-  
+displayschedule<-function(schedule){
+  return(dcast(schedule,block_start+block_end~assignment, fun.aggregate=list))
 }
+
+getassignments<-function(schedule,month,year){
+  months<-month(ymd(as.Date(schedule[,1])))
+  years<-year(ymd(as.Date(schedule[,1])))
+  return(schedule[which(months==month & years==year),])
+}
+
 
 whichblock<-function(date,schedule,name){
   temp<-getblockdates(date,blockDates=T)[1]
@@ -83,6 +92,23 @@ d<-getblockdates(date,blockDates=T)
 return(bizseq(d[1],d[2],"CMH"))
 }
 
+make.schedule<-function(schedule) {
+  sched<-NA
+  l<-length(schedule[,1])
+  for (i in 1:l) {
+    sched<-rbind(sched,(cbind(blockdays(schedule[i,1]),schedule[i,3:4])))
+  }
+  sched<-as_tibble(sched[-c(1),])
+  names(sched)<-c("date","assignment","fellow")
+  sched<-dcast(sched,date~assignment, value.var="fellow", fun.aggregate = list)
+  sched$call<-ifelse(weekdays(sched$date)!="Friday",sched$inpatient,NA)
+  return(sched)
+}
+
+getnames<-function(call_schedule){
+  list(names(call_schedule)[which(!is.na(call_schedule[2:4]))+1])
+}
+
 #returns vector containing start and end date/time of call for a given inpatient block date while
 callevent<-function(date){
 d<-getblockdates(date,blockDates=T)
@@ -95,19 +121,61 @@ getcallweekends<-function(date){
   first<-bdates[1]
   last<-bdates[2]
   numfri<-ceiling(as.numeric(last + 1 - 5 + 4) / 7) - ceiling(as.numeric(first - 5 + 4) / 7)
-  wkds<-list()
-  for(i in 1:numfri) {
-    wkds[[i]]<-bizseq(first+(i-1)*7,first+7*i-1,cal="CMH_call_weekend")
-  }
+  temp<-bizseq(first,last,cal="CMH_call_weekend")
+  wkd_starts<-temp[which(weekdays(temp)=="Friday")]
+  wkds<-mapply(function(x) seq(x,x+2,1),wkd_starts)
   return(wkds)
 }
 
-geteligibleweekends<-function(block){
-  if (block@assignment!="inpatient") {
-    return(getcallweekends(block@startdate))
-  } else {return (NA)}
+rearrange<-function(callschedule){
+  l<-which(!is.na(callschedule$wkdcall))
+  output<-NA
+  for (i in 1:length(l)) {
+    output<-rbind(output,cbind(unlist(callschedule$wkdcall[l[i]]),callschedule$fellow[l[i]]))
+  }
+  output<-as_tibble(output[-c(1),])
+  names(output)<-c("date","fellow")
+  output$date<-as.Date(as.numeric(output$date),origin="1970-01-01")
+  output$week<-week(output$date)
+  output<-dcast(output,date~fellow)
+  return(output)
 }
 
+x<-make.schedule(schedule)
+x$call<-as.character(x$call)
+y<-geteligibleweekends(schedule)
+z<-rearrange(y)
+zz<-wkdcall(z)
+zzz<-full_join(x,zz) %>% arrange(date)
+zzz$call<-ifelse(zzz$call!="NA",zzz$call,lead(zzz$call,n=1))
+zzz<-zzz[which(!duplicated(zzz$date,fromLast = FALSE)),]
+zzz$inpatient<-ifelse(zzz$inpatient=="NULL",zzz$call,zzz$inpatient)
+zzz$esrd<-ifelse(zzz$esrd=="NULL",zzz$call,zzz$esrd)
+
+
+
+geteligibleweekends<-function(schedule){
+  # if (block@assignment!="inpatient") {
+  #   return(getcallweekends(block@startdate))
+  # } else {return (NA)}
+  l<-length(schedule[,1])
+  wkdout<-list()
+  for (i in 1:l){
+    wkdout[i]<-ifelse(schedule[i,3]!="inpatient",list(getcallweekends(schedule[i,1])),NA)
+  }
+  schedule$wkdcall<-wkdout
+  return(schedule)
+}
+
+wkdcall<-function(call_schedule){
+  l<-length(call_schedule[,1])
+  temp<-NA
+  for (i in 1:l){
+    temp[i]<-paste(names(call_schedule)[which(!is.na(call_schedule[i,2:4]))+1],collapse=' or ')
+  }
+  call_schedule$call<-temp
+  return(call_schedule[,c(1,5)])
+}
 numberOfDays <- function(date) {
   m <- format(date, format="%m")
   
