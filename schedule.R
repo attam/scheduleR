@@ -3,6 +3,9 @@ library(chron)
 library(bizdays)
 library(stringr)
 library(lubridate)
+library(tibble)
+library(dplyr)
+library(reshape2)
 
 # CMH calendar
 holidays.fun <- function(x) {
@@ -141,23 +144,7 @@ rearrange<-function(callschedule){
   return(output)
 }
 
-x<-make.schedule(schedule)
-x$call<-as.character(x$call)
-y<-geteligibleweekends(schedule)
-z<-rearrange(y)
-zz<-wkdcall(z)
-zzz<-full_join(x,zz) %>% arrange(date)
-zzz$call<-ifelse(zzz$call!="NA",zzz$call,lead(zzz$call,n=1))
-zzz<-zzz[which(!duplicated(zzz$date,fromLast = FALSE)),]
-zzz$inpatient<-ifelse(zzz$inpatient=="NULL",zzz$call,zzz$inpatient)
-zzz$esrd<-ifelse(zzz$esrd=="NULL",zzz$call,zzz$esrd)
-
-
-
 geteligibleweekends<-function(schedule){
-  # if (block@assignment!="inpatient") {
-  #   return(getcallweekends(block@startdate))
-  # } else {return (NA)}
   l<-length(schedule[,1])
   wkdout<-list()
   for (i in 1:l){
@@ -186,9 +173,107 @@ numberOfDays <- function(date) {
   return(as.integer(format(date - 1, format="%d")))
 }
 
-ref(paste("2018-",str_pad(1:12, 2, pad = "0"),sep=""),"month")
+readfellow <- function(holiday)
+{ 
+  n <- readline(prompt=paste("Enter an fellow who will be on call for",holiday,": "))
+  return(as.character(n))
+}
+
+holiday_call<-function(year) {
+  holidays<-as.Date(holidays.fun(year))
+  fellows<-NA
+  for (i in 1:6){
+    fellows[i]<-readfellow(holidays[i])
+  }
+  temp<-as_tibble(cbind(as.Date(holidays.fun(2019)),matrix(t(fellows),length(fellows),3)))
+  names(temp)<-c("date","inpatient","esrd","call")
+  temp$date<-as.Date(as.numeric(temp$date),origin="1970-01-01")
+  temp
+  return(temp)
+}
+
+add_holidays<-function(holiday_schedule,regular_schedule){
+  holiday_schedule$research<-NA
+  holiday_schedule$path<-NA
+  holiday_schedule$orientation<-NA
+  temp<-rbind(holiday_schedule %>% select(date,esrd,inpatient,research,path,orientation,call),regular_schedule %>% arrange(date))
+  temp$call[match(holiday_schedule$date,temp$date)-1]<-temp$inpatient[match(holiday_schedule$date,temp$date)]
+  return(temp)
+}
+
+clean.schedule<-function(schedule){
+  schedule$research[which(sapply(schedule$research,function(x) is.null(x)|identical(x,character(0))))]<-NA
+  schedule$path[which(sapply(schedule$path,function(x) is.null(x)|identical(x,character(0))))]<-NA
+  schedule$orientation[which(sapply(schedule$orientation,function(x) is.null(x)|identical(x,character(0))))]<-NA
+  schedule$esrd[which(sapply(schedule$esrd,function(x) is.null(x)|identical(x,character(0))))]<-NA
+  schedule$inpatient[which(sapply(schedule$inpatient,function(x) is.null(x)|identical(x,character(0))))]<-NA
+  return(schedule)
+}
+
+make.csv<-function(schedule,fellow,type){
+  temp<-NA
+    temp$Startdate<-schedule$date[which(sapply(t(schedule[,which(names(schedule)==type)]),function(x) match(fellow,unlist(x)))==1)]
+    temp$Starttime<-ifelse(type=="call","05:00 PM","07:00 AM")
+    temp$Enddate<-temp$Startdate
+    if (type=="call") temp$Enddate<-temp$Enddate+1
+    temp$Endtime<-ifelse(type=="call","07:00 AM", "05:00 PM")
+    temp$Subject<-switch(type,"call"="On call","inpatient"="Inpatient","esrd"="Dialysis/Transplant","research"="Research","path"="Pathology","orientation"="Orientation")
+  temp$all_day<-"FALSE"
+  temp$desc<-fellow
+  temp<-as.data.frame(temp) %>% select(Subject,Startdate,Starttime,Enddate,Endtime,all_day,desc)
+  names(temp)<-c("Subject","Start Date","Start Time","End Date","End Time","All Day Event","Description")
+  write.csv(temp,file=paste(fellow,"_",type,".csv",sep=""),row.names=FALSE)
+  return(temp)
+}
+
+get.events<-function(schedule,fellow){
+  subject<-names(schedule)[which(!is.na(match(unlist(schedule[1,]),fellow)))]
+  temp<-sapply(subject,function(x) cbind(row.names=FALSE,x,as.Date(as.numeric(schedule[1]),origin="1970-01-01"),as.character(ifelse(x=="call","05:00 PM","07:00 AM")),as.Date(as.numeric(ifelse(x=="call",schedule[1]+1,schedule[1])),origin="1970-01-01"),as.character(ifelse(x=="call","07:00 AM","05:00 PM")),fellow,stringsAsFactors=FALSE))
+  temp<-as_tibble(t(temp)) %>% select(V2,V3,V4,V5,V6,V7,V8)
+  names(temp)<-c("Subject","Start Date","Start Time","End Date","End Time","Description","All Day Event")
+  temp$`Start Date`<-as.Date(as.numeric(temp$`Start Date`),origin="1970-01-01")
+  temp$`End Date`<-as.Date(as.numeric(temp$`End Date`),origin="1970-01-01")
+  return(temp)
+}
 
 
+# make.csv2<-function(schedule,fellow){
+#   cbind(Subject=schedule$)
+#   temp$Startdate<-schedule$date[which(sapply(t(schedule[,which(names(schedule)==type[i])]),function(x) match(fellow,unlist(x)))==1)]
+#   temp$Starttime<-ifelse(type[i]=="call","05:00 PM","07:00 AM")
+#   temp$Enddate<-temp$Startdate
+#   if (type[i]=="call") temp$Enddate<-temp$Enddate+1
+#   temp$Endtime<-ifelse(type[i]=="call","07:00 AM", "05:00 PM")
+#   temp$Subject<-switch(type[i],"call"="On call","inpatient"="Inpatient","esrd"="Dialysis/Transplant","research"="Research","path"="Pathology","orientation"="Orientation")
+#   temp2<-rbind(temp2,temp)
+#   }
+#   temp2$all_day<-"FALSE"
+#   temp2$desc<-fellow
+#   temp2<-as.data.frame(temp2) %>% select(Subject,Startdate,Starttime,Enddate,Endtime,all_day,desc)
+#   names(temp2)<-c("Subject","Start Date","Start Time","End Date","End Time","All Day Event","Description")
+#   write.csv(temp2,file=paste(fellow,"_.csv",sep=""),row.names=FALSE)
+#   return(temp2)
+# }
+
+
+blockschedule_file<-"blockschedule.csv"
+sched<-convertblocks(blockschedule_file,"Matta")
+sched<-rbind(sched,convertblocks(blockschedule_file,"Singh"))
+sched<-rbind(sched,convertblocks(blockschedule_file,"Morgans"))
+x<-make.schedule(sched)
+x$call<-as.character(x$call)
+y<-geteligibleweekends(sched)
+z<-rearrange(y)
+zz<-wkdcall(z)
+zzz<-full_join(x,zz) %>% arrange(date)
+zzz$call<-ifelse(zzz$call!="NA",zzz$call,lead(zzz$call,n=1))
+zzz<-zzz[which(!duplicated(zzz$date,fromLast = FALSE)),]
+zzz$inpatient<-ifelse(zzz$inpatient=="NULL",zzz$call,zzz$inpatient)
+zzz$esrd<-ifelse(zzz$esrd=="NULL",zzz$call,zzz$esrd)
+holiday_sched<-holiday_call(2019)
+complete_sched<-add_holidays(holiday_sched,zzz) %>% arrange(date)
+complete_sched<-clean.schedule(complete_sched)
+final_sched<-as.data.frame(complete_sched,row.names=FALSE)
 
 
 multi.sapply <- function(...) {
